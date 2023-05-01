@@ -1,0 +1,238 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.UI;
+using TMPro;
+
+public class PlayerController : MonoBehaviour
+{
+    public Transform cameraRotate;
+    public float cameraRotateSpeed;
+    Quaternion cameraRotation;
+    
+    public Transform cursor;
+    public float cursorSpeed;
+    public float cursorRotSpeed;
+    Vector3Int cursorPos;
+    Vector3Int cursorDirection;
+    
+    public Tile[] tileTypes;
+    public float tileMoveSpeed;
+    public float tileRotateSpeed;
+    public int tileMovePriorityRange;
+    int tileTypeIndex;
+    
+    public Transform tileGroup;
+    public Vector3Int boardSize;
+    Tile[,,] board;
+    List<Tile> placedTiles = new List<Tile>();
+
+    int frameID;
+
+    PlayerInput playerInput;
+
+    public TextMeshProUGUI hudTileTypeText;
+    public Image hudTileTypeImage;
+    public TextMeshProUGUI hudFrameID;
+
+    void Awake()
+    {
+        playerInput = new PlayerInput();
+        playerInput.Default.Enable();
+        playerInput.Default.MoveCursor.performed     += MoveCursor;
+        playerInput.Default.Place.performed          += Place;
+        playerInput.Default.Remove.performed         += Remove;
+        playerInput.Default.SwitchTileType.performed += SwitchTileType;
+        playerInput.Default.Play.performed           += context => Debug.Log("Play");
+        playerInput.Default.NextFrame.performed      += NextFrame;
+        playerInput.Default.Menu.performed           += context => Debug.Log("Menu");
+        playerInput.Default.Reset.performed          += Reset;
+        playerInput.Default.RotateCursor.performed   += RotateCursor;
+        playerInput.Default.RotateView.performed     += RotateView;
+
+        board = GetBlankBoard();
+    }
+
+    void Start()
+    {
+        cursorPos = Vector3Int.RoundToInt(transform.position);
+        cursorDirection = Vector3Int.RoundToInt(transform.rotation * Vector3.forward);
+        cameraRotation = cameraRotate.rotation;
+
+        hudTileTypeImage.sprite = tileTypes[tileTypeIndex].hudTileTypeSprite;
+    }
+
+    void Update()
+    {
+        cameraRotate.position = cursor.position;
+        cameraRotate.rotation = Quaternion.RotateTowards(cameraRotate.rotation, cameraRotation, cameraRotateSpeed * Time.deltaTime);
+    }
+
+    void FixedUpdate()
+    {
+        cursor.transform.position = Vector3.MoveTowards(cursor.transform.position, cursorPos, cursorSpeed * Time.fixedDeltaTime);
+        cursor.transform.rotation = Quaternion.RotateTowards(cursor.transform.rotation, Quaternion.LookRotation(cursorDirection, Vector3.up), cursorRotSpeed * Time.fixedDeltaTime);
+    }
+
+    void MoveCursor(InputAction.CallbackContext context)
+    {
+        Vector2 moveVector2D = context.ReadValue<Vector2>();
+        Vector3 moveVectorFromCameraRotation = cameraRotation * new Vector3(moveVector2D.x, boardSize.y, moveVector2D.y);
+
+        Vector3Int desiredCursorPosition = cursorPos + Vector3Int.RoundToInt(moveVectorFromCameraRotation);
+        Vector3Int newCursorPosition = Vector3Int.Min(Vector3Int.Max(desiredCursorPosition, Vector3Int.zero), boardSize - Vector3Int.one);
+
+        while (newCursorPosition.y > 0 && board[newCursorPosition.x,newCursorPosition.y - 1,newCursorPosition.z] == null) newCursorPosition.y--;
+        
+        cursorPos = newCursorPosition;
+    }
+
+    void RotateCursor(InputAction.CallbackContext context)
+    {
+        int rotation = Mathf.RoundToInt(context.ReadValue<float>());
+
+        cursorDirection = Vector3Int.RoundToInt(Quaternion.Euler(0, 90 * rotation, 0) * cursorDirection);
+    }
+
+    void RotateView(InputAction.CallbackContext context)
+    {
+        int rotation = Mathf.RoundToInt(context.ReadValue<float>());
+        cameraRotation = cameraRotation * Quaternion.Euler(0, 90 * rotation, 0);
+    }
+
+    void Place(InputAction.CallbackContext context)
+    {
+        if (frameID > 0) return;
+        if (cursorPos.y > boardSize.y - 2) return;  // Prevents cursor from pushing itself oob
+
+        Tile tile = Instantiate(
+            tileTypes[tileTypeIndex], 
+            cursorPos + Vector3Int.down, 
+            Quaternion.LookRotation(cursorDirection, 
+            Vector3.up) * Quaternion.Euler(0, 90, 0), 
+            tileGroup
+        );
+        tile.playerController = this;
+        tile.tilePos = cursorPos;
+        tile.tileSpawnPos = cursorPos;
+        tile.tileDirection = cursorDirection;
+        tile.moveSpeed = tileMoveSpeed;
+        tile.rotateSpeed = tileRotateSpeed;
+        board[cursorPos.x,cursorPos.y,cursorPos.z] = tile;
+        placedTiles.Add(tile);
+
+        cursorPos = new Vector3Int(cursorPos.x,cursorPos.y + 1,cursorPos.z);
+    }
+
+    void Remove(InputAction.CallbackContext context)
+    {
+        if (cursorPos.y == 0) return;
+
+        Tile tile = board[cursorPos.x,cursorPos.y - 1,cursorPos.z];
+        Destroy(tile.gameObject);
+        
+        board[cursorPos.x,cursorPos.y - 1,cursorPos.z] = null;
+        placedTiles.Remove(tile);
+        
+        cursorPos = new Vector3Int(cursorPos.x,cursorPos.y - 1,cursorPos.z);
+    }
+
+    void SwitchTileType(InputAction.CallbackContext context)
+    {
+        int switchDirection = Mathf.RoundToInt(context.ReadValue<float>());
+
+        tileTypeIndex += switchDirection;
+        if (tileTypeIndex < 0) tileTypeIndex = tileTypes.Length - 1;
+        else if (tileTypeIndex == tileTypes.Length) tileTypeIndex = 0;
+
+        hudTileTypeImage.sprite = tileTypes[tileTypeIndex].hudTileTypeSprite;
+    }
+
+    void NextFrame(InputAction.CallbackContext context)
+    {   
+        frameID++;     
+        hudFrameID.text = frameID.ToString();
+
+        for (int i = tileMovePriorityRange; i > -1; i--)
+            for (int j = 0; j < placedTiles.Count; j++)
+                placedTiles[j].NextFrameMove(i);
+            
+        for (int j = 0; j < placedTiles.Count; j++)
+            placedTiles[j].NextFrameEnd();
+    }
+
+    void Reset(InputAction.CallbackContext context)
+    {
+        frameID = 0;
+        hudFrameID.text = frameID.ToString();
+
+        for (int i = 0; i < placedTiles.Count; i++)
+            placedTiles[i].Reset();
+    }
+
+    public bool IsTileInBounds(Vector3Int tilePos)
+    {
+        if (tilePos.x < 0 || boardSize.x <= tilePos.x) return false;
+        if (tilePos.y < 0 || boardSize.y <= tilePos.y) return false;
+        if (tilePos.z < 0 || boardSize.z <= tilePos.z) return false;
+
+        return true;
+    }
+
+    public bool IsTileSpaceClear(Vector3Int tileSpace)
+    {
+        if (board[tileSpace.x,tileSpace.y,tileSpace.z] == null) return true;
+        return false;
+    }
+
+    public Tile GetTileFromPosition(Vector3Int tilePos)
+    {
+        return board[tilePos.x,tilePos.y,tilePos.z];
+    }
+    
+    public bool MoveTile(Vector3Int targetPos, Vector3Int translation)
+    {
+        if (!IsTileInBounds(targetPos)) return false;
+        if (IsTileSpaceClear(targetPos)) return false;
+        
+        Tile targetTile = GetTileFromPosition(targetPos);
+        if (!targetTile.isMoveable) return false;
+        if (targetTile.hasMoved) return false;
+        
+        Vector3Int destinationPos = targetPos + translation;
+        if (!IsTileInBounds(destinationPos)) return false;
+        if (!IsTileSpaceClear(destinationPos)) return false;
+
+        board[destinationPos.x,destinationPos.y,destinationPos.z] = targetTile;
+        board[targetPos.x,targetPos.y,targetPos.z] = null;
+        targetTile.tilePos = destinationPos;
+        targetTile.hasMoved = true;
+        targetTile.isAirborne = false;
+
+        Vector3Int floorTilePos = destinationPos + Vector3Int.down;
+        if (IsTileInBounds(floorTilePos) && IsTileSpaceClear(floorTilePos)) targetTile.isAirborne = true;
+
+        Vector3Int ceilTilePos = targetPos + Vector3Int.up;
+        if (IsTileInBounds(ceilTilePos) && !IsTileSpaceClear(ceilTilePos)) GetTileFromPosition(ceilTilePos).isAirborne = true;
+
+        return true;
+    }
+
+    public void SwapTilePos(Vector3Int target, Vector3Int destination)
+    {
+        Tile targetTile = board[target.x,target.y,target.z];
+        Tile destinationTile = board[destination.x,destination.y,destination.z];
+
+        board[target.x,target.y,target.z] = destinationTile;
+        board[destination.x,destination.y,destination.z] = targetTile;
+
+        if (targetTile != null) targetTile.tilePos = destination;
+        if (destinationTile != null) destinationTile.tilePos = target;
+    }
+
+    public Tile[,,] GetBlankBoard()
+    {
+        return new Tile[boardSize.x,boardSize.y,boardSize.z];
+    }
+}
